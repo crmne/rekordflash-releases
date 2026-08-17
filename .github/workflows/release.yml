@@ -64,11 +64,22 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $crt = Join-Path $env:VCToolsRedistDir 'x64\Microsoft.VC143.CRT'
-          if (-not (Test-Path $crt)) {
-            throw "Microsoft VC++ redistributable directory is unavailable: $crt"
+          $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+          $installation = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Redist.14.Latest -property installationPath
+          if (-not $installation) {
+            throw 'Visual Studio installation with the VC++ redistributable is unavailable'
           }
-          Copy-Item (Join-Path $crt '*.dll') -Destination 'target/${{ matrix.target }}/release'
+          $redistRoot = Join-Path $installation 'VC\Redist\MSVC'
+          $crt = Get-ChildItem $redistRoot -Directory |
+            Sort-Object Name -Descending |
+            ForEach-Object {
+              Get-ChildItem (Join-Path $_.FullName 'x64') -Directory -Filter 'Microsoft.VC*.CRT' -ErrorAction SilentlyContinue
+            } |
+            Select-Object -First 1
+          if (-not $crt) {
+            throw "Microsoft VC++ x64 redistributable directory is unavailable under $redistRoot"
+          }
+          Copy-Item (Join-Path $crt.FullName '*.dll') -Destination 'target/${{ matrix.target }}/release'
 
       - name: Package
         shell: bash
