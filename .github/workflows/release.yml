@@ -60,6 +60,16 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
+      - name: Bundle Microsoft VC++ runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $crt = Join-Path $env:VCToolsRedistDir 'x64\Microsoft.VC143.CRT'
+          if (-not (Test-Path $crt)) {
+            throw "Microsoft VC++ redistributable directory is unavailable: $crt"
+          }
+          Copy-Item (Join-Path $crt '*.dll') -Destination 'target/${{ matrix.target }}/release'
+
       - name: Package
         shell: bash
         run: |
@@ -260,8 +270,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$RELEASE_TAG" dist/* \
-            --repo "$GITHUB_REPOSITORY" \
-            --target main \
-            --title "RekordFlash ${{ inputs.version }}" \
-            --notes-file release-notes.md
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/* \
+              --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "RekordFlash ${{ inputs.version }}" \
+              --notes-file release-notes.md
+          else
+            gh release create "$RELEASE_TAG" dist/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --target main \
+              --title "RekordFlash ${{ inputs.version }}" \
+              --notes-file release-notes.md
+          fi
