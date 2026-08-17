@@ -1,0 +1,267 @@
+name: Build release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version without the leading v
+        required: true
+        type: string
+      source_ref:
+        description: Tag or commit in the private source repository
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RELEASE_TAG: v${{ inputs.version }}
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - name: Check out private source
+        uses: actions/checkout@v7
+        with:
+          repository: crmne/rekordflash
+          ref: ${{ inputs.source_ref }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: rustup target add ${{ matrix.target }}
+      - name: GUI and audio build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libpipewire-0.3-dev libpulse-dev \
+            libssl-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libgl1-mesa-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="rekordflash-${RELEASE_TAG}-${{ matrix.target }}"
+          release="target/${{ matrix.target }}/release"
+          mkdir -p "dist/$name"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "$release/rekordflash.exe" "dist/$name/"
+          else
+            cp "$release/rekordflash" "dist/$name/"
+          fi
+          shopt -s nullglob
+          for runtime in "$release"/*.dll "$release"/*.so "$release"/*.dylib; do
+            cp -L "$runtime" "dist/$name/"
+          done
+          cp README.md LICENSE "dist/$name/"
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            cp -r packaging "dist/$name/"
+            rm -rf "dist/$name/packaging/macos"
+          fi
+          cd dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a "$name.zip" "$name"
+          else
+            tar czf "$name.tar.gz" "$name"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
+
+  macos:
+    name: macOS arm64 app
+    runs-on: macos-latest
+    env:
+      APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+    steps:
+      - name: Check out private source
+        uses: actions/checkout@v7
+        with:
+          repository: crmne/rekordflash
+          ref: ${{ inputs.source_ref }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - run: rustup target add aarch64-apple-darwin
+
+      - name: Build arm64
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Fetch verified analysis model
+        run: |
+          model="$RUNNER_TEMP/beat_this.onnx"
+          curl --fail --location --retry 3 \
+            --output "$model" \
+            https://github.com/danigb/beat-this-rs/releases/download/model-large/beat_this.onnx
+          test "$(stat -f%z "$model")" = 83162650
+          printf '%s  %s\n' \
+            5f810debe53459b559127fb55bbad40035bb47cc567b20e501670f968c770f02 \
+            "$model" | shasum -a 256 --check
+
+      - name: App bundle
+        run: |
+          bash packaging/macos/bundle.sh \
+            target/aarch64-apple-darwin/release/rekordflash \
+            RekordFlash.app "${{ inputs.version }}" "$RUNNER_TEMP/beat_this.onnx"
+
+      - name: Import signing certificate
+        if: env.APPLE_CERTIFICATE_P12 != ''
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          echo "$APPLE_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p ci "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p ci "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k ci "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain
+
+      - name: Ad-hoc sign unsigned app
+        if: env.APPLE_CERTIFICATE_P12 == ''
+        run: codesign --force --deep --sign - RekordFlash.app
+
+      - name: Sign
+        if: env.APPLE_CERTIFICATE_P12 != ''
+        run: |
+          release="target/aarch64-apple-darwin/release"
+          shopt -s nullglob
+          for dylib in "$release"/*.dylib; do
+            codesign --force --options runtime --timestamp \
+              --sign "$APPLE_SIGNING_IDENTITY" "$dylib"
+          done
+          codesign --force --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" "$release/rekordflash"
+          codesign --force --deep --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" RekordFlash.app
+
+      - name: Verify app bundle
+        run: codesign --verify --deep --strict --verbose=2 RekordFlash.app
+
+      - name: DMG
+        run: |
+          set -euo pipefail
+          name="rekordflash-${RELEASE_TAG}-macos-arm64"
+          stage="$RUNNER_TEMP/dmg"
+          mkdir -p "$stage"
+          cp -R RekordFlash.app "$stage/"
+          ln -s /Applications "$stage/Applications"
+          test "$(find "$stage" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" = 2
+          mkdir -p dist
+          hdiutil create -volname RekordFlash -srcfolder "$stage" -ov \
+            -format UDZO "dist/$name.dmg"
+          hdiutil verify "dist/$name.dmg"
+
+      - name: Notarize
+        if: env.APPLE_CERTIFICATE_P12 != ''
+        run: |
+          name="rekordflash-${RELEASE_TAG}-macos-arm64"
+          xcrun notarytool submit "dist/$name.dmg" --wait \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD"
+          xcrun stapler staple "dist/$name.dmg"
+
+      - name: Arm64 tarball
+        run: |
+          set -euo pipefail
+          name="rekordflash-${RELEASE_TAG}-macos-arm64"
+          release="target/aarch64-apple-darwin/release"
+          mkdir -p "dist/$name"
+          cp "$release/rekordflash" README.md LICENSE "dist/$name/"
+          mkdir -p "dist/$name/models"
+          cp "$RUNNER_TEMP/beat_this.onnx" "dist/$name/models/"
+          cp packaging/models/Beat-This-LICENSE "dist/$name/models/LICENSE"
+          shopt -s nullglob
+          for runtime in "$release"/*.dylib; do
+            cp -L "$runtime" "dist/$name/"
+          done
+          tar czf "dist/$name.tar.gz" -C dist "$name"
+          rm -r "dist/$name"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos-arm64
+          path: |
+            dist/*.dmg
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Publish
+    needs: [build, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out private source for release notes
+        uses: actions/checkout@v7
+        with:
+          repository: crmne/rekordflash
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum * > checksums.txt
+      - name: Release notes
+        run: |
+          previous="$(git describe --tags --abbrev=0 "${RELEASE_TAG}^" 2>/dev/null || true)"
+          if [ -n "$previous" ]; then
+            range="$previous..$RELEASE_TAG"
+          else
+            range="$RELEASE_TAG"
+          fi
+          {
+            echo "## What's changed"
+            git log --format='- %s' "$range"
+            echo
+            echo "Verify downloaded files with \`checksums.txt\`."
+          } > release-notes.md
+      - name: Publish public binary release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$RELEASE_TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target main \
+            --title "RekordFlash ${{ inputs.version }}" \
+            --notes-file release-notes.md
