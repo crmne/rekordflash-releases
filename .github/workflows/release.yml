@@ -98,12 +98,44 @@ jobs:
             tar czf "$name.tar.gz" "$name"
           fi
 
+      - name: Check out public release tooling
+        if: runner.os == 'Windows'
+        uses: actions/checkout@v7
+        with:
+          repository: crmne/rekordflash-releases
+          ref: ${{ github.sha }}
+          path: .release-tools
+          persist-credentials: false
+
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $iscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) {
+            $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          }
+          if (-not (Test-Path $iscc)) {
+            throw "Inno Setup compiler is unavailable: $iscc"
+          }
+          $source = (Resolve-Path 'dist/rekordflash-${{ env.RELEASE_TAG }}-${{ matrix.target }}').Path
+          $output = (Resolve-Path 'dist').Path
+          $script = (Resolve-Path '.release-tools/packaging/windows/RekordFlash.iss').Path
+          & $iscc "/DSourceDir=$source" "/DOutputDir=$output" "/DAppVersion=${{ inputs.version }}" "/DReleaseTag=${{ env.RELEASE_TAG }}" $script
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup failed with exit code $LASTEXITCODE"
+          }
+          if (-not (Test-Path 'dist/rekordflash-${{ env.RELEASE_TAG }}-windows-x86_64-setup.exe')) {
+            throw 'Windows installer was not produced'
+          }
+
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
           path: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*-setup.exe
           if-no-files-found: error
 
   macos:
