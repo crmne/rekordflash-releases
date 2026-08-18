@@ -1,6 +1,10 @@
 name: Build release
 
 on:
+  # The private source repository dispatches this on every version tag. The
+  # manual form stays for rebuilding a tag whose build failed.
+  repository_dispatch:
+    types: [release]
   workflow_dispatch:
     inputs:
       version:
@@ -16,12 +20,14 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ inputs.version }}
+  group: release-${{ inputs.version || github.event.client_payload.version }}
   cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
-  RELEASE_TAG: v${{ inputs.version }}
+  VERSION: ${{ inputs.version || github.event.client_payload.version }}
+  SOURCE_REF: ${{ inputs.source_ref || github.event.client_payload.source_ref }}
+  RELEASE_TAG: v${{ inputs.version || github.event.client_payload.version }}
 
 jobs:
   build:
@@ -42,7 +48,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: crmne/rekordflash
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ env.SOURCE_REF }}
           ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
@@ -100,7 +106,7 @@ jobs:
           cp README.md LICENSE "dist/$name/"
           if [ "${{ runner.os }}" = "Linux" ]; then
             cp -r packaging "dist/$name/"
-            rm -rf "dist/$name/packaging/macos"
+            rm -rf "dist/$name/packaging/macos" "dist/$name/packaging/windows"
           fi
           cd dist
           if [ "${{ runner.os }}" = "Windows" ]; then
@@ -108,15 +114,6 @@ jobs:
           else
             tar czf "$name.tar.gz" "$name"
           fi
-
-      - name: Check out public release tooling
-        if: runner.os == 'Windows'
-        uses: actions/checkout@v7
-        with:
-          repository: crmne/rekordflash-releases
-          ref: ${{ github.sha }}
-          path: .release-tools
-          persist-credentials: false
 
       - name: Build Windows installer
         if: runner.os == 'Windows'
@@ -131,8 +128,8 @@ jobs:
           }
           $source = (Resolve-Path 'dist/rekordflash-${{ env.RELEASE_TAG }}-${{ matrix.target }}').Path
           $output = (Resolve-Path 'dist').Path
-          $script = (Resolve-Path '.release-tools/packaging/windows/RekordFlash.iss').Path
-          & $iscc "/DSourceDir=$source" "/DOutputDir=$output" "/DAppVersion=${{ inputs.version }}" "/DReleaseTag=${{ env.RELEASE_TAG }}" $script
+          $script = (Resolve-Path 'packaging/windows/RekordFlash.iss').Path
+          & $iscc "/DSourceDir=$source" "/DOutputDir=$output" "/DAppVersion=${{ env.VERSION }}" "/DReleaseTag=${{ env.RELEASE_TAG }}" $script
           if ($LASTEXITCODE -ne 0) {
             throw "Inno Setup failed with exit code $LASTEXITCODE"
           }
@@ -164,7 +161,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: crmne/rekordflash
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ env.SOURCE_REF }}
           ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
@@ -190,7 +187,7 @@ jobs:
         run: |
           bash packaging/macos/bundle.sh \
             target/aarch64-apple-darwin/release/rekordflash \
-            RekordFlash.app "${{ inputs.version }}" "$RUNNER_TEMP/beat_this.onnx"
+            RekordFlash.app "${{ env.VERSION }}" "$RUNNER_TEMP/beat_this.onnx"
 
       - name: Import signing certificate
         if: env.APPLE_CERTIFICATE_P12 != ''
@@ -283,7 +280,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: crmne/rekordflash
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ env.SOURCE_REF }}
           fetch-depth: 0
           ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
           persist-credentials: false
@@ -318,12 +315,12 @@ jobs:
               --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" \
-              --title "RekordFlash ${{ inputs.version }}" \
+              --title "RekordFlash ${{ env.VERSION }}" \
               --notes-file release-notes.md
           else
             gh release create "$RELEASE_TAG" dist/* \
               --repo "$GITHUB_REPOSITORY" \
               --target main \
-              --title "RekordFlash ${{ inputs.version }}" \
+              --title "RekordFlash ${{ env.VERSION }}" \
               --notes-file release-notes.md
           fi
