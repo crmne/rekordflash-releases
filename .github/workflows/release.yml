@@ -239,7 +239,7 @@ jobs:
           PACKAGE_TARGET: ${{ matrix.package_target }}
         run: |
           set -euo pipefail
-          gem install native-packages --version 0.4.0 --no-document
+          gem install native-packages --version 0.5.0 --no-document
           export SOURCE_DATE_EPOCH="$REKORDFLASH_ALPHA_RELEASED_AT"
           native-packages --config native-packages.alpha.yaml build \
             --version "$VERSION" --target "$PACKAGE_TARGET" --output "$RUNNER_TEMP/native-packages"
@@ -331,69 +331,30 @@ jobs:
               RekordFlash.app "$VERSION" "$RUNNER_TEMP/beat_this.onnx"
           fi
 
-      - name: Import signing certificate
-        if: env.APPLE_CERTIFICATE_P12 != ''
-        run: |
-          keychain="$RUNNER_TEMP/signing.keychain-db"
-          echo "$APPLE_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security create-keychain -p ci "$keychain"
-          security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p ci "$keychain"
-          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" \
-            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -k ci "$keychain"
-          security list-keychains -d user -s "$keychain" login.keychain
-
-      - name: Ad-hoc sign unsigned app
+      - name: Ad-hoc sign local app
         if: env.APPLE_CERTIFICATE_P12 == ''
         run: codesign --force --deep --sign - RekordFlash.app
 
-      - name: Sign
-        if: env.APPLE_CERTIFICATE_P12 != ''
-        run: |
-          release="target/aarch64-apple-darwin/release"
-          shopt -s nullglob
-          for dylib in "$release"/*.dylib; do
-            codesign --force --options runtime --timestamp \
-              --sign "$APPLE_SIGNING_IDENTITY" "$dylib"
-          done
-          codesign --force --options runtime --timestamp \
-            --sign "$APPLE_SIGNING_IDENTITY" "$release/rekordflash"
-          codesign --force --deep --options runtime --timestamp \
-            --sign "$APPLE_SIGNING_IDENTITY" RekordFlash.app
-
-      - name: Verify app bundle
+      - name: Verify local app bundle
+        if: env.APPLE_CERTIFICATE_P12 == ''
         run: codesign --verify --deep --strict --verbose=2 RekordFlash.app
 
-      - name: DMG
+      - name: Build verified native stable DMG
         if: needs.prepare.outputs.private_alpha != 'true'
         run: |
           set -euo pipefail
+          gem install native-packages --version 0.5.0 --no-document
+          native-packages --config native-packages.macos.yaml build \
+            --version "$VERSION" --target macos-arm64 --output "$RUNNER_TEMP/native-stable-macos"
           name="rekordflash-${RELEASE_TAG}-macos-arm64"
-          stage="$RUNNER_TEMP/dmg"
-          mkdir -p "$stage"
-          cp -R RekordFlash.app "$stage/"
-          ln -s /Applications "$stage/Applications"
-          test "$(find "$stage" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" = 2
           mkdir -p dist
-          hdiutil create -volname RekordFlash -srcfolder "$stage" -ov \
-            -format UDZO "dist/$name.dmg"
-          hdiutil verify "dist/$name.dmg"
-
-      - name: Notarize
-        if: env.APPLE_CERTIFICATE_P12 != '' && needs.prepare.outputs.private_alpha != 'true'
-        run: |
-          name="rekordflash-${RELEASE_TAG}-macos-arm64"
-          xcrun notarytool submit "dist/$name.dmg" --wait \
-            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
-            --password "$APPLE_APP_PASSWORD"
-          xcrun stapler staple "dist/$name.dmg"
+          cp "$RUNNER_TEMP/native-stable-macos/packages/macos-arm64/dmg/$name.dmg" "dist/$name.dmg"
 
       - name: Build verified native alpha DMG
         if: needs.prepare.outputs.private_alpha == 'true'
         run: |
           set -euo pipefail
-          gem install native-packages --version 0.4.0 --no-document
+          gem install native-packages --version 0.5.0 --no-document
           export SOURCE_DATE_EPOCH="$REKORDFLASH_ALPHA_RELEASED_AT"
           native-packages --config native-packages.alpha.yaml build \
             --version "$VERSION" --target macos-arm64 --output "$RUNNER_TEMP/native-packages"
@@ -405,28 +366,31 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
-      - name: Arm64 tarball
+      - name: Sign, notarize and archive portable arm64 code
         run: |
           set -euo pipefail
+          gem install native-packages --version 0.5.0 --no-document
           name="rekordflash-${RELEASE_TAG}-macos-arm64"
           release="target/aarch64-apple-darwin/release"
-          mkdir -p "dist/$name"
-          cp "$release/rekordflash" README.md LICENSE "dist/$name/"
+          input="$RUNNER_TEMP/portable-input/$name"
+          signed="$RUNNER_TEMP/portable-signed/$name"
+          mkdir -p "$input" dist
+          cp "$release/rekordflash" README.md LICENSE "$input/"
           if [ "${{ needs.prepare.outputs.private_alpha }}" = "true" ]; then
-            ruby scripts/models.rb stage "$RUNNER_TEMP/alpha-models" "dist/$name/models"
-            cp release/private-alpha.json "dist/$name/alpha-release.json"
-            cp packaging/PRIVATE-ALPHA.md "dist/$name/"
+            ruby scripts/models.rb stage "$RUNNER_TEMP/alpha-models" "$input/models"
+            cp release/private-alpha.json "$input/alpha-release.json"
+            cp packaging/PRIVATE-ALPHA.md "$input/"
           else
-            mkdir -p "dist/$name/models"
-            cp "$RUNNER_TEMP/beat_this.onnx" "dist/$name/models/"
-            cp packaging/models/Beat-This-LICENSE "dist/$name/models/LICENSE"
+            mkdir -p "$input/models"
+            cp "$RUNNER_TEMP/beat_this.onnx" "$input/models/"
+            cp packaging/models/Beat-This-LICENSE "$input/models/LICENSE"
           fi
           shopt -s nullglob
           for runtime in "$release"/*.dylib; do
-            cp -L "$runtime" "dist/$name/"
+            cp -L "$runtime" "$input/"
           done
-          tar czf "dist/$name.tar.gz" -C dist "$name"
-          rm -r "dist/$name"
+          native-packages notarize-macos "$input" --output "$signed"
+          tar czf "dist/$name.tar.gz" -C "$RUNNER_TEMP/portable-signed" "$name"
 
       - uses: actions/upload-artifact@v7
         with:
@@ -466,7 +430,7 @@ jobs:
         if: needs.prepare.outputs.private_alpha == 'true'
         run: |
           set -euo pipefail
-          gem install native-packages --version 0.4.0 --no-document
+          gem install native-packages --version 0.5.0 --no-document
           ruby scripts/collect_alpha_packages.rb "$RUNNER_TEMP/native-package-inputs" \
             "$RUNNER_TEMP/native-packages-complete" dist "$VERSION"
       - name: Checksums
@@ -535,6 +499,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libarchive-tools binutils rpm
           go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
-          gem install native-packages --version 0.4.0 --no-document
+          gem install native-packages --version 0.5.0 --no-document
           native-packages build --release "$RELEASE_TAG" --output dist/native-packages
           native-packages publish --from dist/native-packages --to github
