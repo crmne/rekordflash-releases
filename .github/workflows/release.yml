@@ -30,8 +30,61 @@ env:
   RELEASE_TAG: v${{ inputs.version || github.event.client_payload.version }}
 
 jobs:
+  prepare:
+    name: Validate tagged release inputs
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.inputs.outputs.source_sha }}
+      private_alpha: ${{ steps.inputs.outputs.private_alpha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: crmne/rekordflash
+          ref: ${{ env.SOURCE_REF }}
+          fetch-depth: 0
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '4.0'
+      - name: Bind version, tag and alpha configuration
+        id: inputs
+        shell: bash
+        run: |
+          ruby <<'RUBY'
+          require 'open3'
+          version = ENV.fetch('VERSION')
+          abort 'Unsupported release version' unless version.match?(/\A(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-alpha\.[1-9][0-9]*)?\z/)
+          package = File.read('Cargo.toml').split(/^\[package\]\s*$/).fetch(1).split(/^\[/).first
+          abort 'Crate and requested versions differ' unless package.match(/^version\s*=\s*"([^"]+)"/)[1] == version
+          tag, status = Open3.capture2('git', 'rev-parse', '--verify', "refs/tags/v#{version}^{commit}")
+          abort 'The requested release tag does not exist' unless status.success?
+          head, status = Open3.capture2('git', 'rev-parse', '--verify', 'HEAD')
+          abort 'Source checkout differs from the release tag' unless status.success? && head == tag && head.strip.match?(/\A[a-f0-9]{40}\z/)
+          alpha = version.include?('-')
+          if alpha
+            require_relative 'scripts/lib/alpha_release'
+            release = RekordFlash::AlphaRelease.load(Dir.pwd, version: version)
+            tags, status = Open3.capture2('git', 'tag', '--merged', 'HEAD', '--list', 'v*-alpha.*')
+            abort 'Unable to inspect earlier alpha versions' unless status.success?
+            tags.lines.map(&:strip).reject { |name| name == "v#{version}" }.each do |name|
+              previous, status = Open3.capture2('git', 'show', "#{name}:release/private-alpha.json")
+              abort "Missing earlier alpha configuration: #{name}" unless status.success?
+              previous = JSON.parse(previous, allow_duplicate_key: false)
+              previous = RekordFlash::AlphaRelease.new(previous, version: name.delete_prefix('v'))
+              abort 'Native build counter must increase after earlier alpha tags' unless release.data.fetch('build_number') > previous.data.fetch('build_number')
+            end
+            puts release.summary
+          end
+          File.open(ENV.fetch('GITHUB_OUTPUT'), 'a') do |output|
+            output.puts("source_sha=#{head.strip}")
+            output.puts("private_alpha=#{alpha}")
+          end
+          RUBY
+
   build:
     name: build (${{ matrix.target }})
+    needs: prepare
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -48,9 +101,12 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: crmne/rekordflash
-          ref: ${{ env.SOURCE_REF }}
+          ref: ${{ needs.prepare.outputs.source_sha }}
           ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
           persist-credentials: false
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '4.0'
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -63,8 +119,25 @@ jobs:
             libssl-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libgl1-mesa-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
 
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+      - name: Load fixed alpha metadata and complete models
+        if: needs.prepare.outputs.private_alpha == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruby scripts/alpha_release.rb env --version "$VERSION"
+          ruby scripts/models.rb check-native-pins
+          ruby scripts/model_archive.rb fetch "$VERSION" "$RUNNER_TEMP/alpha-models"
+
+      - name: Build private alpha
+        if: needs.prepare.outputs.private_alpha == 'true'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: ruby scripts/alpha_release.rb build --version "$VERSION" --target "$TARGET"
+
+      - name: Build stable
+        if: needs.prepare.outputs.private_alpha != 'true'
+        run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Bundle Microsoft VC++ runtime
         if: runner.os == 'Windows'
@@ -104,6 +177,11 @@ jobs:
             cp -L "$runtime" "dist/$name/"
           done
           cp README.md LICENSE "dist/$name/"
+          if [ "${{ needs.prepare.outputs.private_alpha }}" = "true" ]; then
+            ruby scripts/models.rb stage "$RUNNER_TEMP/alpha-models" "dist/$name/models"
+            cp release/private-alpha.json "dist/$name/alpha-release.json"
+            cp packaging/PRIVATE-ALPHA.md "dist/$name/"
+          fi
           if [ "${{ runner.os }}" = "Linux" ]; then
             cp --parents packaging/applications/rekordflash.desktop packaging/icons/rekordflash.svg packaging/models/Beat-This-LICENSE "dist/$name/"
           fi
@@ -128,7 +206,11 @@ jobs:
           $source = (Resolve-Path 'dist/rekordflash-${{ env.RELEASE_TAG }}-${{ matrix.target }}').Path
           $output = (Resolve-Path 'dist').Path
           $script = (Resolve-Path 'packaging/windows/RekordFlash.iss').Path
-          & $iscc "/DSourceDir=$source" "/DOutputDir=$output" "/DAppVersion=${{ env.VERSION }}" "/DReleaseTag=${{ env.RELEASE_TAG }}" $script
+          $arguments = @("/DSourceDir=$source", "/DOutputDir=$output", "/DAppVersion=$env:VERSION", "/DReleaseTag=$env:RELEASE_TAG")
+          if ($env:REKORDFLASH_NUMERIC_VERSION) {
+            $arguments += "/DNumericVersion=$env:REKORDFLASH_NUMERIC_VERSION"
+          }
+          & $iscc @arguments $script
           if ($LASTEXITCODE -ne 0) {
             throw "Inno Setup failed with exit code $LASTEXITCODE"
           }
@@ -147,6 +229,7 @@ jobs:
 
   macos:
     name: macOS arm64 app
+    needs: prepare
     runs-on: macos-latest
     env:
       APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
@@ -160,18 +243,35 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: crmne/rekordflash
-          ref: ${{ env.SOURCE_REF }}
+          ref: ${{ needs.prepare.outputs.source_sha }}
           ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
           persist-credentials: false
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '4.0'
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
       - run: rustup target add aarch64-apple-darwin
 
-      - name: Build arm64
-        run: cargo build --release --target aarch64-apple-darwin
+      - name: Load fixed alpha metadata and complete models
+        if: needs.prepare.outputs.private_alpha == 'true'
+        run: |
+          set -euo pipefail
+          ruby scripts/alpha_release.rb env --version "$VERSION"
+          ruby scripts/models.rb check-native-pins
+          ruby scripts/model_archive.rb fetch "$VERSION" "$RUNNER_TEMP/alpha-models"
+
+      - name: Build private alpha arm64
+        if: needs.prepare.outputs.private_alpha == 'true'
+        run: ruby scripts/alpha_release.rb build --version "$VERSION" --target aarch64-apple-darwin
+
+      - name: Build stable arm64
+        if: needs.prepare.outputs.private_alpha != 'true'
+        run: cargo build --locked --release --target aarch64-apple-darwin
 
       - name: Fetch verified analysis model
+        if: needs.prepare.outputs.private_alpha != 'true'
         run: |
           model="$RUNNER_TEMP/beat_this.onnx"
           curl --fail --location --retry 3 \
@@ -184,9 +284,19 @@ jobs:
 
       - name: App bundle
         run: |
-          bash packaging/macos/bundle.sh \
-            target/aarch64-apple-darwin/release/rekordflash \
-            RekordFlash.app "${{ env.VERSION }}" "$RUNNER_TEMP/beat_this.onnx"
+          set -euo pipefail
+          if [ "${{ needs.prepare.outputs.private_alpha }}" = "true" ]; then
+            bash packaging/macos/bundle.sh \
+              target/aarch64-apple-darwin/release/rekordflash \
+              RekordFlash.app "$VERSION" "$RUNNER_TEMP/alpha-models" \
+              "$REKORDFLASH_MACOS_VERSION" "$REKORDFLASH_MACOS_BUILD_VERSION"
+            cp release/private-alpha.json RekordFlash.app/Contents/Resources/alpha-release.json
+            cp packaging/PRIVATE-ALPHA.md RekordFlash.app/Contents/Resources/
+          else
+            bash packaging/macos/bundle.sh \
+              target/aarch64-apple-darwin/release/rekordflash \
+              RekordFlash.app "$VERSION" "$RUNNER_TEMP/beat_this.onnx"
+          fi
 
       - name: Import signing certificate
         if: env.APPLE_CERTIFICATE_P12 != ''
@@ -252,9 +362,15 @@ jobs:
           release="target/aarch64-apple-darwin/release"
           mkdir -p "dist/$name"
           cp "$release/rekordflash" README.md LICENSE "dist/$name/"
-          mkdir -p "dist/$name/models"
-          cp "$RUNNER_TEMP/beat_this.onnx" "dist/$name/models/"
-          cp packaging/models/Beat-This-LICENSE "dist/$name/models/LICENSE"
+          if [ "${{ needs.prepare.outputs.private_alpha }}" = "true" ]; then
+            ruby scripts/models.rb stage "$RUNNER_TEMP/alpha-models" "dist/$name/models"
+            cp release/private-alpha.json "dist/$name/alpha-release.json"
+            cp packaging/PRIVATE-ALPHA.md "dist/$name/"
+          else
+            mkdir -p "dist/$name/models"
+            cp "$RUNNER_TEMP/beat_this.onnx" "dist/$name/models/"
+            cp packaging/models/Beat-This-LICENSE "dist/$name/models/LICENSE"
+          fi
           shopt -s nullglob
           for runtime in "$release"/*.dylib; do
             cp -L "$runtime" "dist/$name/"
@@ -272,17 +388,20 @@ jobs:
 
   release:
     name: Publish
-    needs: [build, macos]
+    needs: [prepare, build, macos]
     runs-on: ubuntu-latest
     steps:
       - name: Check out private source for release notes
         uses: actions/checkout@v7
         with:
           repository: crmne/rekordflash
-          ref: ${{ env.SOURCE_REF }}
+          ref: ${{ needs.prepare.outputs.source_sha }}
           fetch-depth: 0
           ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
           persist-credentials: false
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '4.0'
       - uses: actions/download-artifact@v8
         with:
           path: dist
@@ -300,6 +419,12 @@ jobs:
             range="$RELEASE_TAG"
           fi
           {
+            if [ "${{ needs.prepare.outputs.private_alpha }}" = "true" ]; then
+              ruby scripts/alpha_release.rb check --version "$VERSION"
+              echo
+              cat packaging/PRIVATE-ALPHA.md
+              echo
+            fi
             echo "## What's changed"
             git log --format='- %s' "$range"
             echo
@@ -309,15 +434,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          release_flags=()
+          if [ "${{ needs.prepare.outputs.private_alpha }}" = "true" ]; then
+            release_flags+=(--prerelease --latest=false)
+          fi
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" dist/* \
               --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit "$RELEASE_TAG" \
+              "${release_flags[@]}" \
               --repo "$GITHUB_REPOSITORY" \
               --title "RekordFlash ${{ env.VERSION }}" \
               --notes-file release-notes.md
           else
             gh release create "$RELEASE_TAG" dist/* \
+              "${release_flags[@]}" \
               --repo "$GITHUB_REPOSITORY" \
               --target main \
               --title "RekordFlash ${{ env.VERSION }}" \
