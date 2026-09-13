@@ -239,7 +239,7 @@ jobs:
           PACKAGE_TARGET: ${{ matrix.package_target }}
         run: |
           set -euo pipefail
-          gem install native-packages --version 0.3.1 --no-document
+          gem install native-packages --version 0.4.0 --no-document
           export SOURCE_DATE_EPOCH="$REKORDFLASH_ALPHA_RELEASED_AT"
           native-packages --config native-packages.alpha.yaml build \
             --version "$VERSION" --target "$PACKAGE_TARGET" --output "$RUNNER_TEMP/native-packages"
@@ -393,7 +393,7 @@ jobs:
         if: needs.prepare.outputs.private_alpha == 'true'
         run: |
           set -euo pipefail
-          gem install native-packages --version 0.3.1 --no-document
+          gem install native-packages --version 0.4.0 --no-document
           export SOURCE_DATE_EPOCH="$REKORDFLASH_ALPHA_RELEASED_AT"
           native-packages --config native-packages.alpha.yaml build \
             --version "$VERSION" --target macos-arm64 --output "$RUNNER_TEMP/native-packages"
@@ -466,7 +466,7 @@ jobs:
         if: needs.prepare.outputs.private_alpha == 'true'
         run: |
           set -euo pipefail
-          gem install native-packages --version 0.3.1 --no-document
+          gem install native-packages --version 0.4.0 --no-document
           ruby scripts/collect_alpha_packages.rb "$RUNNER_TEMP/native-package-inputs" \
             "$RUNNER_TEMP/native-packages-complete" dist "$VERSION"
       - name: Checksums
@@ -535,6 +535,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libarchive-tools binutils rpm
           go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
-          gem install native-packages --version 0.3.1 --no-document
+          gem install native-packages --version 0.4.0 --no-document
           native-packages build --release "$RELEASE_TAG" --output dist/native-packages
           native-packages publish --from dist/native-packages --to github
