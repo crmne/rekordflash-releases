@@ -105,8 +105,7 @@ jobs:
           done
           cp README.md LICENSE "dist/$name/"
           if [ "${{ runner.os }}" = "Linux" ]; then
-            cp -r packaging "dist/$name/"
-            rm -rf "dist/$name/packaging/macos" "dist/$name/packaging/windows"
+            cp --parents packaging/applications/rekordflash.desktop packaging/icons/rekordflash.svg packaging/models/Beat-This-LICENSE "dist/$name/"
           fi
           cd dist
           if [ "${{ runner.os }}" = "Windows" ]; then
@@ -324,3 +323,23 @@ jobs:
               --title "RekordFlash ${{ env.VERSION }}" \
               --notes-file release-notes.md
           fi
+      - uses: ruby/setup-ruby@v1
+        if: "!contains(env.VERSION, '-')"
+        with:
+          ruby-version: '4.0'
+      - uses: actions/setup-go@v5
+        if: "!contains(env.VERSION, '-')"
+        with:
+          go-version: '1.26.4'
+          cache: false
+      - name: Build and attach native Linux packages
+        if: "!contains(env.VERSION, '-') && hashFiles('native-packages.yaml') != ''"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libarchive-tools binutils rpm
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
+          gem install native-packages --version 0.2.0 --no-document
+          native-packages build --release "$RELEASE_TAG" --output dist/native-packages
+          native-packages publish --from dist/native-packages --to github
