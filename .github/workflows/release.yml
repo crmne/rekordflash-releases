@@ -186,6 +186,7 @@ jobs:
             ruby scripts/models.rb stage "$RUNNER_TEMP/alpha-models" "dist/$name/models"
             cp release/private-alpha.json "dist/$name/alpha-release.json"
             cp packaging/PRIVATE-ALPHA.md "dist/$name/"
+            chmod 644 "dist/$name/alpha-release.json" "dist/$name/PRIVATE-ALPHA.md"
           fi
           if [ "${{ runner.os }}" = "Linux" ]; then
             cp --parents packaging/applications/rekordflash.desktop packaging/icons/rekordflash.svg packaging/models/Beat-This-LICENSE "dist/$name/"
@@ -327,6 +328,7 @@ jobs:
               "$REKORDFLASH_MACOS_VERSION" "$REKORDFLASH_MACOS_BUILD_VERSION"
             cp release/private-alpha.json RekordFlash.app/Contents/Resources/alpha-release.json
             cp packaging/PRIVATE-ALPHA.md RekordFlash.app/Contents/Resources/
+            chmod 644 RekordFlash.app/Contents/Resources/{alpha-release.json,PRIVATE-ALPHA.md}
           else
             bash packaging/macos/bundle.sh \
               target/aarch64-apple-darwin/release/rekordflash \
@@ -382,6 +384,7 @@ jobs:
             ruby scripts/models.rb stage "$RUNNER_TEMP/alpha-models" "$input/models"
             cp release/private-alpha.json "$input/alpha-release.json"
             cp packaging/PRIVATE-ALPHA.md "$input/"
+            chmod 644 "$input/alpha-release.json" "$input/PRIVATE-ALPHA.md"
           else
             mkdir -p "$input/models"
             cp "$RUNNER_TEMP/beat_this.onnx" "$input/models/"
