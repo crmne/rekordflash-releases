@@ -156,11 +156,23 @@ jobs:
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
-        run: ruby scripts/alpha_release.rb build --version "$VERSION" --target "$TARGET"
+        run: |
+          # Ruby's Windows setup exports GNU MAKE; OpenSSL's MSVC build needs NMAKE.
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            unset MAKE MAKEFLAGS MFLAGS
+          fi
+          ruby scripts/alpha_release.rb build --version "$VERSION" --target "$TARGET"
 
       - name: Build stable
         if: needs.prepare.outputs.private_alpha != 'true'
-        run: cargo build --locked --release --target ${{ matrix.target }}
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            unset MAKE MAKEFLAGS MFLAGS
+          fi
+          cargo build --locked --release --target "$TARGET"
 
       - name: Bundle Microsoft VC++ runtime
         if: runner.os == 'Windows'
