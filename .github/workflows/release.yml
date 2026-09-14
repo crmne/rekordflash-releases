@@ -131,7 +131,26 @@ jobs:
           set -euo pipefail
           ruby scripts/alpha_release.rb env --version "$VERSION"
           ruby scripts/models.rb check-native-pins
-          ruby scripts/model_archive.rb fetch "$VERSION" "$RUNNER_TEMP/alpha-models"
+
+      - name: Require the private model revision
+        if: needs.prepare.outputs.private_alpha == 'true'
+        shell: bash
+        run: test -n "$REKORDFLASH_MODEL_SOURCE_REVISION"
+
+      - name: Check out the pinned private model bundle
+        if: needs.prepare.outputs.private_alpha == 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: crmne/rekordflash
+          ref: ${{ env.REKORDFLASH_MODEL_SOURCE_REVISION }}
+          path: .release-models
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - name: Verify and stage every model
+        if: needs.prepare.outputs.private_alpha == 'true'
+        shell: bash
+        run: ruby scripts/model_archive.rb stage-private "$VERSION" .release-models "$RUNNER_TEMP/alpha-models"
 
       - name: Select native Windows Perl for OpenSSL
         if: runner.os == 'Windows'
@@ -332,7 +351,26 @@ jobs:
           set -euo pipefail
           ruby scripts/alpha_release.rb env --version "$VERSION"
           ruby scripts/models.rb check-native-pins
-          ruby scripts/model_archive.rb fetch "$VERSION" "$RUNNER_TEMP/alpha-models"
+
+      - name: Require the private model revision
+        if: needs.prepare.outputs.private_alpha == 'true'
+        shell: bash
+        run: test -n "$REKORDFLASH_MODEL_SOURCE_REVISION"
+
+      - name: Check out the pinned private model bundle
+        if: needs.prepare.outputs.private_alpha == 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: crmne/rekordflash
+          ref: ${{ env.REKORDFLASH_MODEL_SOURCE_REVISION }}
+          path: .release-models
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - name: Verify and stage every model
+        if: needs.prepare.outputs.private_alpha == 'true'
+        shell: bash
+        run: ruby scripts/model_archive.rb stage-private "$VERSION" .release-models "$RUNNER_TEMP/alpha-models"
 
       - name: Build private alpha arm64
         if: needs.prepare.outputs.private_alpha == 'true'
