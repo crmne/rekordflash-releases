@@ -133,6 +133,24 @@ jobs:
           ruby scripts/models.rb check-native-pins
           ruby scripts/model_archive.rb fetch "$VERSION" "$RUNNER_TEMP/alpha-models"
 
+      - name: Select native Windows Perl for OpenSSL
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          ruby <<'RUBY'
+          require 'open3'
+          candidates = ['C:/Strawberry/perl/bin/perl.exe'] +
+            ENV.fetch('PATH').split(File::PATH_SEPARATOR).map { |dir| File.join(dir, 'perl.exe') }
+          perl = candidates.uniq.find do |path|
+            next false unless File.file?(path)
+            platform, _, status = Open3.capture3(path, '-e', 'print $^O')
+            status.success? && platform == 'MSWin32'
+          end
+          abort 'A native Windows Perl installation is required to build OpenSSL' unless perl
+          File.open(ENV.fetch('GITHUB_ENV'), 'a') { |file| file.puts("OPENSSL_SRC_PERL=#{perl}") }
+          puts "Verified native Windows Perl: #{perl}"
+          RUBY
+
       - name: Build private alpha
         if: needs.prepare.outputs.private_alpha == 'true'
         shell: bash
