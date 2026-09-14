@@ -290,6 +290,12 @@ jobs:
           targets: aarch64-apple-darwin
       - run: rustup target add aarch64-apple-darwin
 
+      - name: Set the reviewed macOS deployment target
+        run: |
+          set -euo pipefail
+          minimum="$(ruby scripts/macos_runtime.rb minimum)"
+          echo "MACOSX_DEPLOYMENT_TARGET=$minimum" >> "$GITHUB_ENV"
+
       - name: Load fixed alpha metadata and complete models
         if: needs.prepare.outputs.private_alpha == 'true'
         run: |
@@ -394,6 +400,7 @@ jobs:
           for runtime in "$release"/*.dylib; do
             cp -L "$runtime" "$input/"
           done
+          ruby scripts/macos_runtime.rb verify "$input"
           native-packages notarize-macos "$input" --output "$signed"
           tar czf "dist/$name.tar.gz" -C "$RUNNER_TEMP/portable-signed" "$name"
 
