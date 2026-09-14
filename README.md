@@ -1,20 +1,15 @@
 # RekordFlash
 
-Official binary releases of RekordFlash, a native DJ library manager for
-preparing music and exporting it to standalone Pioneer/AlphaTheta hardware.
+A native music library app for preparing tracks and exporting them to standalone Pioneer/AlphaTheta hardware.
 
-Download the latest build from [Releases](https://github.com/crmne/rekordflash-releases/releases/latest).
-On Windows, use the `windows-x86_64-setup.exe` installer; the MSVC ZIP is the
-portable alternative. macOS builds target Apple silicon, and Linux archives
-are published for x86-64 and ARM64. Each release includes SHA-256 checksums.
+**[Download an alpha build](https://github.com/crmne/rekordflash-releases/releases).** All current versions are prereleases.
 
-Invited alpha testers should select the appropriate prerelease from
-[all releases](https://github.com/crmne/rekordflash-releases/releases).
-Private-alpha packages include the complete model set and `PRIVATE-ALPHA.md`
-with activation, expiry and feedback instructions. A personal annual license
-is required for new preparation work; each alpha build has a fixed 30-day lifetime.
+From **0.5.0-alpha.2**, no account or license key is needed. Each build expires after 30 days and includes every analysis model. The app's **About this alpha** dialog shows the deadline and links to updates.
 
-RekordFlash is proprietary commercial software. This repository intentionally
-contains no application source code. Use and redistribution require a separate
-license from the copyright holder. Third-party components bundled with the
-application remain under their respective licenses.
+- **Windows:** choose the `windows-x86_64-setup.exe` installer. The ZIP is portable.
+- **Mac:** choose the Apple Silicon DMG.
+- **Linux:** choose a DEB, RPM or portable archive for x86-64 or ARM64.
+
+Read the short release notes for platform limitations and checksum instructions. Keep a library backup while testing. To report a problem, use **Library settings → Feedback → Create diagnostic report…** and review it before sharing.
+
+RekordFlash's application source remains private. Alpha usage and expiry are described in the release notes. Third-party components and models retain their respective notices and license terms.
