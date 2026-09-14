@@ -64,7 +64,9 @@ jobs:
           alpha = version.include?('-')
           if alpha
             require_relative 'scripts/lib/alpha_release'
+            require_relative 'scripts/lib/alpha_release_notes'
             release = RekordFlash::AlphaRelease.load(Dir.pwd, version: version)
+            RekordFlash::AlphaReleaseNotes.read(Dir.pwd)
             tags, status = Open3.capture2('git', 'tag', '--merged', 'HEAD', '--list', 'v*-alpha.*')
             abort 'Unable to inspect earlier alpha versions' unless status.success?
             tags.lines.map(&:strip).reject { |name| name == "v#{version}" }.each do |name|
@@ -439,6 +441,11 @@ jobs:
           sha256sum * > checksums.txt
       - name: Release notes
         run: |
+          set -euo pipefail
+          if [ "${{ needs.prepare.outputs.private_alpha }}" = "true" ]; then
+            ruby scripts/alpha_release_notes.rb --version "$VERSION" > release-notes.md
+            exit 0
+          fi
           previous="$(git describe --tags --abbrev=0 "${RELEASE_TAG}^" 2>/dev/null || true)"
           if [ -n "$previous" ]; then
             range="$previous..$RELEASE_TAG"
@@ -446,12 +453,6 @@ jobs:
             range="$RELEASE_TAG"
           fi
           {
-            if [ "${{ needs.prepare.outputs.private_alpha }}" = "true" ]; then
-              ruby scripts/alpha_release.rb check --version "$VERSION"
-              echo
-              cat packaging/PRIVATE-ALPHA.md
-              echo
-            fi
             echo "## What's changed"
             git log --format='- %s' "$range"
             echo
@@ -467,8 +468,17 @@ jobs:
             release_flags+=(--prerelease --latest=false)
           fi
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" dist/* \
-              --repo "$GITHUB_REPOSITORY" --clobber
+            if [ "${{ needs.prepare.outputs.private_alpha }}" = "true" ]; then
+              gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > existing-release.json
+              ruby scripts/verify_alpha_assets.rb dist existing-release.json "$RELEASE_TAG" > missing-assets.txt
+              mapfile -t missing_assets < missing-assets.txt
+              if [ "${#missing_assets[@]}" -gt 0 ]; then
+                gh release upload "$RELEASE_TAG" "${missing_assets[@]}" --repo "$GITHUB_REPOSITORY"
+              fi
+            else
+              gh release upload "$RELEASE_TAG" dist/* \
+                --repo "$GITHUB_REPOSITORY" --clobber
+            fi
             gh release edit "$RELEASE_TAG" \
               "${release_flags[@]}" \
               --repo "$GITHUB_REPOSITORY" \
