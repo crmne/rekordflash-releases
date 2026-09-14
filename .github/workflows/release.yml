@@ -477,8 +477,21 @@ jobs:
             "$RUNNER_TEMP/native-packages-complete" dist "$VERSION"
       - name: Checksums
         run: |
-          cd dist
-          sha256sum * > checksums.txt
+          ruby <<'RUBY'
+          require 'digest'
+          paths = Dir.glob('dist/*').select { |path| File.file?(path) && File.basename(path) != 'checksums.txt' }.sort
+          abort 'No release artifacts to hash' if paths.empty?
+          # GitHub changes tildes in uploaded asset names to periods.
+          names = paths.map { |path| File.basename(path).tr('~', '.') }
+          abort 'Duplicate download filenames' unless names.uniq == names
+          abort 'Unsupported download filename' unless names.all? { |name| name.match?(/\A[A-Za-z0-9._-]+\z/) }
+          paths.zip(names).each do |path, name|
+            output = File.join('dist', name)
+            File.rename(path, output) unless path == output
+          end
+          checksums = names.sort.map { |name| "#{Digest::SHA256.file(File.join('dist', name)).hexdigest}  #{name}\n" }
+          File.write('dist/checksums.txt', checksums.join)
+          RUBY
       - name: Release notes
         run: |
           set -euo pipefail
