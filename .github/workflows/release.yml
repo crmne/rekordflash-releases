@@ -25,6 +25,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Public logs: backtraces and diagnostics must not quote the private source.
+  RUST_BACKTRACE: '0'
   VERSION: ${{ inputs.version || github.event.client_payload.version }}
   SOURCE_REF: ${{ inputs.source_ref || github.event.client_payload.source_ref }}
   RELEASE_TAG: v${{ inputs.version || github.event.client_payload.version }}
@@ -191,7 +193,7 @@ jobs:
           if [[ "$RUNNER_OS" == Windows ]]; then
             unset MAKE MAKEFLAGS MFLAGS
           fi
-          cargo build --locked --release --target "$TARGET"
+          cargo build --locked --release --message-format short --target "$TARGET"
 
       - name: Bundle Microsoft VC++ runtime
         if: runner.os == 'Windows'
@@ -378,7 +380,7 @@ jobs:
 
       - name: Build stable arm64
         if: needs.prepare.outputs.private_alpha != 'true'
-        run: cargo build --locked --release --target aarch64-apple-darwin
+        run: cargo build --locked --release --message-format short --target aarch64-apple-darwin
 
       - name: Fetch verified analysis model
         if: needs.prepare.outputs.private_alpha != 'true'

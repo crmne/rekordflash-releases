@@ -1,0 +1,89 @@
+name: CI
+
+# Tests a commit of the private source repository on free public runners. The
+# private repository dispatches this on every push to master.
+#
+# This repository is public, so nothing here may reveal the source:
+# - only the source repository's dispatch and a maintainer's manual run start
+#   it (no pull_request triggers, so no fork can run a workflow here);
+# - diagnostics use the short format, which names file and line without
+#   quoting code, and rustfmt reports only the names of unformatted files;
+# - there is no compiler cache and no uploaded artifact.
+on:
+  repository_dispatch:
+    types: [ci]
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full commit hash in the private source repository
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci
+  cancel-in-progress: true
+
+env:
+  SOURCE_SHA: ${{ inputs.source_sha || github.event.client_payload.source_sha }}
+  CARGO_INCREMENTAL: '0'
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: '0'
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # Every build is cold: nothing is cached on public runners.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 120 || 90 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: The request names one full commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Expected a full commit hash"; exit 1; }
+
+      - name: Check out private source
+        uses: actions/checkout@v7
+        with:
+          repository: crmne/rekordflash
+          ref: ${{ env.SOURCE_SHA }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - name: GUI and audio build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libpipewire-0.3-dev libpulse-dev \
+            libssl-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libgl1-mesa-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - name: Select native Windows Perl for OpenSSL
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          perl=C:/Strawberry/perl/bin/perl.exe
+          test -f "$perl"
+          echo "OPENSSL_SRC_PERL=$perl" >> "$GITHUB_ENV"
+
+      # rustup installs the toolchain rust-toolchain.toml pins, with rustfmt
+      # and clippy, on first use.
+      - name: Formatting
+        if: runner.os == 'Linux'
+        shell: bash
+        run: cargo fmt --check -- -l
+
+      - name: Lints
+        shell: bash
+        run: cargo clippy --locked --all-targets --message-format short
+
+      - name: Tests
+        shell: bash
+        run: cargo test --locked --all-targets --no-fail-fast --message-format short
