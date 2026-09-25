@@ -142,6 +142,15 @@ jobs:
           test -f "$perl"
           echo "OPENSSL_SRC_PERL=$perl" >> "$GITHUB_ENV"
 
+      # macOS's default temporary folder is under /var, a symlink to
+      # /private/var, and the preparation cache refuses symlinked paths.
+      - name: Temporary files on a real path
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/tmp"
+          echo "TMPDIR=$(cd "$RUNNER_TEMP/tmp" && pwd -P)" >> "$GITHUB_ENV"
+
       # The toolchain rust-toolchain.toml pins, with rustfmt and clippy,
       # before the cache so its key follows the pinned rustc.
       - name: Rust toolchain
