@@ -486,6 +486,9 @@ jobs:
     name: Publish
     needs: [prepare, build, macos]
     runs-on: ubuntu-latest
+    # Publishing waits for the maintainer's approval, and only this job can
+    # read the release signing key.
+    environment: release-signing
     steps:
       - name: Check out private source for release notes
         uses: actions/checkout@v7
@@ -532,6 +535,23 @@ jobs:
           checksums = names.sort.map { |name| "#{Digest::SHA256.file(File.join('dist', name)).hexdigest}  #{name}\n" }
           File.write('dist/checksums.txt', checksums.join)
           RUBY
+      # Sign checksums.txt (checksums.txt.sig), then check the signature and
+      # every listed file against the public key committed in the private
+      # source, so this repository alone cannot change the key the app
+      # embeds. The app's updater refuses releases without a valid signature.
+      - name: Sign checksums
+        env:
+          REKORDFLASH_UPDATE_SIGNING_KEY: ${{ secrets.REKORDFLASH_UPDATE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          test -f assets/update-public-key.hex
+          test -n "$REKORDFLASH_UPDATE_SIGNING_KEY"
+          gem install native-packages --version 0.7.0 --no-document
+          native-packages sign-checksums dist/checksums.txt \
+            --public-key assets/update-public-key.hex \
+            --key-env REKORDFLASH_UPDATE_SIGNING_KEY
+          native-packages verify-checksums dist/checksums.txt \
+            --public-key assets/update-public-key.hex
       - name: Release notes
         run: |
           set -euo pipefail

@@ -1,15 +1,20 @@
 name: CI
 
-# Tests a commit of the private source repository on free public runners. The
-# private repository dispatches this on every push to master.
+# Tests commits of the private source repository on free public runners.
+# Every 30 minutes it looks at the private master and tests a commit no
+# earlier run has tested; a maintainer can also test any commit by hand.
 #
 # This repository is public, so nothing here may reveal the source:
-# - only the source repository's dispatch and a maintainer's manual run start
-#   it (no pull_request triggers, so no fork can run a workflow here);
+# - only the schedule, a dispatch and a maintainer's manual run start it (no
+#   pull_request triggers, so no fork can run a workflow here);
 # - diagnostics use the short format, which names file and line without
 #   quoting code, and rustfmt reports only the names of unformatted files;
 # - there is no compiler cache and no uploaded artifact.
+run-name: CI ${{ inputs.source_sha || github.event.client_payload.source_sha || 'check for new commits' }}
+
 on:
+  schedule:
+    - cron: '*/30 * * * *'
   repository_dispatch:
     types: [ci]
   workflow_dispatch:
@@ -23,8 +28,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci
-  cancel-in-progress: true
+  group: ci-${{ github.event_name == 'schedule' && 'poll' || 'test' }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 env:
   SOURCE_SHA: ${{ inputs.source_sha || github.event.client_payload.source_sha }}
@@ -33,7 +38,41 @@ env:
   RUST_BACKTRACE: '0'
 
 jobs:
+  # On the schedule: find the private master's commit and, unless a run has
+  # already tested it, start one for it.
+  poll:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Find the private master commit
+        uses: actions/checkout@v7
+        with:
+          repository: crmne/rekordflash
+          ref: master
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+          sparse-checkout: rust-toolchain.toml
+          sparse-checkout-cone-mode: false
+      - name: Test it unless a run already has
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          tested="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --limit 100 \
+            --json displayTitle -q "[.[] | select(.displayTitle == \"CI $sha\")] | length")"
+          if [ "$tested" = 0 ]; then
+            gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" -f source_sha="$sha"
+            echo "Started a test run for $sha" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "$sha is already tested" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   test:
+    if: github.event_name != 'schedule'
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     # Every build is cold: nothing is cached on public runners.
