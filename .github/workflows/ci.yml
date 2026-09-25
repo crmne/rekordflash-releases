@@ -1,15 +1,18 @@
 name: CI
 
-# Tests commits of the private source repository on free public runners.
-# Every 30 minutes it looks at the private master and tests a commit no
-# earlier run has tested; a maintainer can also test any commit by hand.
+# All of RekordFlash's automation runs here, on free public runners; the
+# private source repository has no workflows. Every 30 minutes this looks at
+# the private repository: it tests the newest untested commit on master, and
+# starts the release build for a new version tag (publishing still waits for
+# the maintainer's approval). A maintainer can also test any commit by hand.
 #
 # This repository is public, so nothing here may reveal the source:
 # - only the schedule, a dispatch and a maintainer's manual run start it (no
 #   pull_request triggers, so no fork can run a workflow here);
 # - diagnostics use the short format, which names file and line without
 #   quoting code, and rustfmt reports only the names of unformatted files;
-# - there is no compiler cache and no uploaded artifact.
+# - compiled outputs are cached with mbx, which only this repository's own
+#   workflows can restore; nothing is uploaded as an artifact.
 run-name: CI ${{ inputs.source_sha || github.event.client_payload.source_sha || 'check for new commits' }}
 
 on:
@@ -53,7 +56,8 @@ jobs:
           repository: crmne/rekordflash
           ref: master
           ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
-          persist-credentials: false
+          # Kept for this job only, to list tags; nothing here runs the source.
+          persist-credentials: true
           sparse-checkout: rust-toolchain.toml
           sparse-checkout-cone-mode: false
       - name: Test it unless a run already has
@@ -70,12 +74,38 @@ jobs:
           else
             echo "$sha is already tested" >> "$GITHUB_STEP_SUMMARY"
           fi
+      - name: Build the newest version tag unless a release run exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$(git ls-remote --tags origin 'refs/tags/v*' | python3 -c '
+          import re, sys
+          def key(tag):
+              match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)(?:-alpha\.(\d+))?", tag)
+              if not match:
+                  return None
+              major, minor, patch, alpha = match.groups()
+              # A final release sorts after its alphas.
+              return (int(major), int(minor), int(patch), int(alpha) if alpha else float("inf"))
+          tags = {line.split("refs/tags/")[1].strip().removesuffix("^{}") for line in sys.stdin if "refs/tags/" in line}
+          ranked = sorted((key(tag), tag) for tag in tags if key(tag))
+          print(ranked[-1][1] if ranked else "")
+          ')"
+          [ -n "$tag" ] || exit 0
+          version="${tag#v}"
+          started="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release.yml --limit 100 \
+            --json displayTitle -q "[.[] | select(.displayTitle == \"Release $version\")] | length")"
+          if [ "$started" = 0 ] && ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh workflow run release.yml --repo "$GITHUB_REPOSITORY" -f version="$version" -f source_ref="$tag"
+            echo "Started the release build for $tag" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   test:
     if: github.event_name != 'schedule'
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Every build is cold: nothing is cached on public runners.
+    # The first build of each platform is cold.
     timeout-minutes: ${{ matrix.os == 'windows-latest' && 120 || 90 }}
     strategy:
       fail-fast: false
@@ -112,8 +142,17 @@ jobs:
           test -f "$perl"
           echo "OPENSSL_SRC_PERL=$perl" >> "$GITHUB_ENV"
 
-      # rustup installs the toolchain rust-toolchain.toml pins, with rustfmt
-      # and clippy, on first use.
+      # The toolchain rust-toolchain.toml pins, with rustfmt and clippy,
+      # before the cache so its key follows the pinned rustc.
+      - name: Rust toolchain
+        shell: bash
+        run: rustup toolchain install
+
+      # One cache generation per platform.
+      - uses: jdx/mr-boxington-action@v1
+        with:
+          cache-generation: test-${{ matrix.os }}-v1
+
       - name: Formatting
         if: runner.os == 'Linux'
         shell: bash
@@ -121,8 +160,35 @@ jobs:
 
       - name: Lints
         shell: bash
-        run: cargo clippy --locked --all-targets --message-format short
+        run: mbx clippy --locked --all-targets --message-format short
 
       - name: Tests
         shell: bash
-        run: cargo test --locked --all-targets --no-fail-fast --message-format short
+        run: mbx test --locked --all-targets --no-fail-fast --message-format short
+
+  recipes:
+    name: packaging recipes
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: The request names one full commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Expected a full commit hash"; exit 1; }
+      - name: Check out private source
+        uses: actions/checkout@v7
+        with:
+          repository: crmne/rekordflash
+          ref: ${{ env.SOURCE_SHA }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '4.0'
+      - run: |
+          gem install minitest --version 6.0.6 --no-document
+          gem install minitest-mock --version 5.27.0 --no-document
+          ruby scripts/test_native_package.rb
+          ruby scripts/test_models.rb

@@ -1,8 +1,10 @@
 name: Build release
+run-name: Release ${{ inputs.version || github.event.client_payload.version }}
 
 on:
-  # The private source repository dispatches this on every version tag. The
-  # manual form stays for rebuilding a tag whose build failed.
+  # CI's 30-minute check starts this for a new version tag in the private
+  # source repository; it can also be started by hand, for example to
+  # rebuild a tag whose build failed.
   repository_dispatch:
     types: [release]
   workflow_dispatch:
