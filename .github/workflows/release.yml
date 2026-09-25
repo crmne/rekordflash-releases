@@ -235,6 +235,9 @@ jobs:
             cp -L "$runtime" "dist/$name/"
           done
           cp README.md LICENSE "dist/$name/"
+          # Tells the app's updater this unpacked copy may replace itself.
+          # The Windows installer leaves it out and installs its own marker.
+          printf 'rekordflash-portable-v1\n' > "dist/$name/rekordflash-portable.txt"
           if [ "${{ needs.prepare.outputs.private_alpha }}" = "true" ]; then
             ruby scripts/models.rb stage "$RUNNER_TEMP/alpha-models" "dist/$name/models"
             cp release/private-alpha.json "dist/$name/alpha-release.json"
@@ -273,7 +276,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Inno Setup failed with exit code $LASTEXITCODE"
           }
-          if (-not (Test-Path 'dist/rekordflash-${{ env.RELEASE_TAG }}-windows-x86_64-setup.exe')) {
+          # The updater's name, or the name older tags' setup script used.
+          if (-not (Test-Path 'dist/rekordflash-${{ env.RELEASE_TAG }}-x86_64-pc-windows-msvc-setup.exe') -and
+              -not (Test-Path 'dist/rekordflash-${{ env.RELEASE_TAG }}-windows-x86_64-setup.exe')) {
             throw 'Windows installer was not produced'
           }
 
