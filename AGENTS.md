@@ -50,8 +50,7 @@ until there is something substantial to announce: a feature, or a batch of
 fixes worth a changelog entry. The exception is a regression in something just
 released, which goes out as soon as it is fixed.
 
-Before writing release notes, read the repository's previous two stable
-releases and match their style:
+Before writing release notes, read the previous two stable releases, when available, and match their style. For alpha releases, follow the repository's existing alpha release-notes format.
 
 - Start with a short plain-language summary, followed by a download line when
   the project ships binaries.
